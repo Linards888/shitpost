@@ -57,3 +57,8 @@ form.inline { display: inline; } form.inline button { padding: 1px 7px; font-siz
 .ok { color: var(--quote); font-weight: 600; }
 @media (max-width: 560px) { .post.reply { margin-left: 10px; } .omitted, .open { margin-left: 10px; } nav.top .right { margin-left: 0; } }
 a.btn { display: inline-block; background: var(--btn); color: #fff; border-radius: 6px; padding: 6px 12px; }
+.captcha { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.captcha img { border-radius: 6px; border: 1px solid var(--line); background: #fbf3ea; }
+.captcha input[name=captcha] { max-width: 200px; text-transform: uppercase; letter-spacing: 3px; }
+footer code, .prose code { font-size: 12px; background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+.captcha input[name=captcha]::placeholder { text-transform: none; letter-spacing: normal; }

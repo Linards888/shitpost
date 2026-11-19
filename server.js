@@ -35,6 +35,17 @@ const MAX_SUBJECT = 80;
 const THREAD_COOLDOWN = 60_000;
 const REPLY_COOLDOWN = 15_000;
 
+// ---------- Tor onion service ----------
+// Tor forwards .onion traffic to a SEPARATE local port (ONION_PORT). Everything arriving
+// there is treated as a Tor visitor. Tor visitors have no IP we could see, so they all share
+// one identity: bans can't target them, and posting limits are shared by all Tor users
+// together (plus a CAPTCHA on every post).
+const ONION_PORT = process.env.ONION_PORT ? Number(process.env.ONION_PORT) : 0; // 0 = disabled
+const ONION_ADDRESS = (process.env.ONION_ADDRESS || '').replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+const CAPTCHA_ALL = process.env.CAPTCHA_ALL === '1'; // also require CAPTCHA on the normal site
+const TOR_THREADS_PER_10MIN = Number(process.env.TOR_THREADS_PER_10MIN || 5);
+const TOR_REPLIES_PER_MIN = Number(process.env.TOR_REPLIES_PER_MIN || 12);
+
 const BOARDS = {
   b:     { title: 'Viss kas', desc: 'Jebkas, kas neder citur' },
   skola: { title: 'Skola', desc: 'Skolas dzīve, stundas, starpbrīži' },
@@ -138,7 +149,82 @@ function clientIp(req) {
   return ip;
 }
 function posterTag(req) {
+  if (req.isTor) return tagEpoch + ':tor'; // all Tor users look the same — by design
   return tagEpoch + ':' + crypto.createHmac('sha256', tagSecret).update(clientIp(req)).digest('hex').slice(0, 24);
+}
+const isTorTag = tag => typeof tag === 'string' && tag.endsWith(':tor');
+
+// Shared sliding-window limits for all Tor posters together.
+const torWindows = { t: [], r: [] };
+let torPaused = false; // moderator "panic switch"
+function torAllow(kind, limit, windowMs) {
+  const now = Date.now();
+  const w = torWindows[kind] = torWindows[kind].filter(x => now - x < windowMs);
+  if (w.length >= limit) return Math.ceil((windowMs - (now - w[0])) / 1000);
+  w.push(now);
+  return 0;
+}
+
+// ---------- CAPTCHA (self-made, no external service, no JavaScript) ----------
+const CAPTCHA_CHARS = 'ACDEFHJKMNPRTUVWXY34679'; // no look-alikes (0/O, 1/I/L, 2/Z, 5/S, 8/B)
+const GLYPHS = {
+  A: '01110100011000111111100011000110001', C: '01111100001000010000100001000001111',
+  D: '11110100011000110001100011000111110', E: '11111100001000011110100001000011111',
+  F: '11111100001000011110100001000010000', H: '10001100011000111111100011000110001',
+  J: '00111000100001000010000101001001100', K: '10001100101010011000101001001010001',
+  M: '10001110111010110101100011000110001', N: '10001110011010110011100011000110001',
+  P: '11110100011000111110100001000010000', R: '11110100011000111110101001001010001',
+  T: '11111001000010000100001000010000100', U: '10001100011000110001100011000101110',
+  V: '10001100011000110001100010101000100', W: '10001100011000110101101011101110001',
+  X: '10001100010101000100010101000110001', Y: '10001100010101000100001000010000100',
+  3: '11110000010000101110000010000111110', 4: '00010001100101010010111110001000010',
+  6: '01110100001000011110100011000101110', 7: '11111000010001000100010000100001000',
+  9: '01110100011000101111000010000101110',
+};
+const captchas = new Map(); // id -> { answer, exp }  (RAM only, one-time use)
+setInterval(() => { const now = Date.now(); for (const [k, v] of captchas) if (v.exp < now) captchas.delete(k); }, 60_000).unref();
+
+function newCaptcha() {
+  if (captchas.size > 20_000) captchas.delete(captchas.keys().next().value);
+  const id = crypto.randomBytes(12).toString('hex');
+  let answer = '';
+  for (let i = 0; i < 5; i++) answer += CAPTCHA_CHARS[crypto.randomInt(CAPTCHA_CHARS.length)];
+  captchas.set(id, { answer, exp: Date.now() + 20 * 60_000 });
+  return id;
+}
+function checkCaptcha(id, given) {
+  const c = captchas.get(String(id || ''));
+  captchas.delete(String(id || '')); // one try per image
+  return !!(c && c.exp > Date.now() && String(given || '').trim().toUpperCase() === c.answer);
+}
+function captchaSvg(answer) {
+  const r = (a, b) => a + Math.random() * (b - a);
+  const W = 200, H = 64, px = 4;
+  let out = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><rect width="${W}" height="${H}" fill="#fbf3ea"/>`;
+  const noise = () => {
+    let s = '';
+    for (let i = 0; i < 70; i++) s += `<rect x="${r(0, W).toFixed(1)}" y="${r(0, H).toFixed(1)}" width="${r(2, 4.5).toFixed(1)}" height="${r(2, 4.5).toFixed(1)}" fill="hsl(${r(10, 40) | 0},${r(40, 80) | 0}%,${r(30, 60) | 0}%)" opacity="${r(.35, .8).toFixed(2)}"/>`;
+    for (let i = 0; i < 5; i++) s += `<path d="M${r(0, 30).toFixed(0)} ${r(0, H).toFixed(0)} Q${r(50, 150).toFixed(0)} ${r(-20, H + 20).toFixed(0)} ${r(170, W).toFixed(0)} ${r(0, H).toFixed(0)}" stroke="hsl(${r(10, 40) | 0},60%,40%)" stroke-width="${r(1, 2.2).toFixed(1)}" fill="none" opacity=".6"/>`;
+    return s;
+  };
+  out += noise();
+  [...answer].forEach((ch, i) => {
+    const g = GLYPHS[ch];
+    const x = 14 + i * 36 + r(-4, 4), y = 14 + r(-6, 6);
+    out += `<g transform="translate(${x.toFixed(1)} ${y.toFixed(1)}) rotate(${r(-13, 13).toFixed(1)} 10 14) skewX(${r(-8, 8).toFixed(1)})" fill="hsl(${r(10, 30) | 0},${r(60, 90) | 0}%,${r(22, 38) | 0}%)">`;
+    for (let k = 0; k < 35; k++) if (g[k] === '1')
+      out += `<rect x="${((k % 5) * px + r(-.7, .7)).toFixed(1)}" y="${(((k / 5) | 0) * px + r(-.7, .7)).toFixed(1)}" width="${r(3.6, 5).toFixed(1)}" height="${r(3.6, 5).toFixed(1)}"/>`;
+    out += '</g>';
+  });
+  return out + noise() + '</svg>';
+}
+const needsCaptcha = req => !!(req.isTor || CAPTCHA_ALL);
+function captchaField(req) {
+  if (!needsCaptcha(req)) return '';
+  const id = newCaptcha();
+  return `<div class="captcha"><img src="/captcha/${id}.svg" width="200" height="64" alt="Drošības kods (5 burti/cipari)">
+  <input type="hidden" name="captcha_id" value="${id}">
+  <input name="captcha" required maxlength="5" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="Kods no bildes"></div>`;
 }
 
 // ---------- form tokens (anti-CSRF / anti-bot, stateless, no cookies) ----------
@@ -204,16 +290,20 @@ function renderPost(p, { op = false, mod = false } = {}) {
 
 function modButtons(p) {
   const f = (action, label) => `<form method="post" action="/mod/${action}/${p.id}" class="inline"><button>${label}</button></form>`;
-  return `<span class="modtools">${f('delete', 'dzēst')}${f('ban1', 'bans 1d')}${f('ban7', 'bans 7d')}${
+  const bans = isTorTag(p.tag) ? '<span class="badge" title="Tor lietotājus nevar bloķēt">Tor</span>'
+    : f('ban1', 'bans 1d') + f('ban7', 'bans 7d');
+  return `<span class="modtools">${f('delete', 'dzēst')}${bans}${
     p.thread ? '' : f('sticky', p.sticky ? 'atspraust' : 'piespraust') + f('lock', p.locked ? 'atslēgt' : 'slēgt')}</span>`;
 }
 
-function postForm(board, thread) {
+function postForm(board, thread, req, prefill = {}) {
+  if (req.isTor && torPaused) return '<p class="locked">Rakstīšana caur Tor šobrīd ir īslaicīgi apturēta. Lasīt var.</p>';
   return `<form class="postform" method="post" action="/${board}/post">
   <input type="hidden" name="token" value="${formToken()}">
-  ${thread ? `<input type="hidden" name="thread" value="${thread}">` : `<input name="subject" maxlength="${MAX_SUBJECT}" placeholder="Tēma (nav obligāta)">`}
-  <textarea name="body" required maxlength="${MAX_BODY}" rows="5" placeholder="${thread ? 'Tava atbilde…' : 'Sāc jaunu pavedienu…'}"></textarea>
+  ${thread ? `<input type="hidden" name="thread" value="${thread}">` : `<input name="subject" maxlength="${MAX_SUBJECT}" placeholder="Tēma (nav obligāta)" value="${esc(prefill.subject || '')}">`}
+  <textarea name="body" required maxlength="${MAX_BODY}" rows="5" placeholder="${thread ? 'Tava atbilde…' : 'Sāc jaunu pavedienu…'}">${esc(prefill.body || '')}</textarea>
   <div class="hp" aria-hidden="true"><label>Neaizpildi šo <input name="website" tabindex="-1" autocomplete="off"></label></div>
+  ${captchaField(req)}
   <button>${thread ? 'Atbildēt' : 'Izveidot pavedienu'}</button>
   <span class="hint">Tu vienmēr esi “Anonīms”. &gt;teksts = citāts, &gt;&gt;123 = saite uz ziņu. <a href="/noteikumi">Noteikumi</a></span>
 </form>`;
@@ -234,7 +324,8 @@ function layout(title, content, req) {
 <nav class="top"><a class="logo" href="/">${SITE_NAME}</a> <span class="boards">${nav}</span>
 <span class="right"><a href="/ieteikumi">ieteikumi</a> · <a href="/noteikumi">noteikumi</a> · <a href="/privatums">privātums</a>${mod ? ' · <a href="/mod">MOD</a>' : ''}</span></nav>
 <main>${content}</main>
-<footer>${SITE_NAME} · Mēs neglabājam IP adreses, nelietojam sīkdatnes un izsekotājus. · <a href="/privatums">Kā tas strādā</a></footer>
+<footer>${SITE_NAME} · Mēs neglabājam IP adreses, nelietojam sīkdatnes un izsekotājus. · <a href="/privatums">Kā tas strādā</a>${
+  req.isTor ? '<br>🧅 Tu esi savienots caur Tor.' : ONION_ADDRESS ? `<br>🧅 Tor adrese: <code>${esc(ONION_ADDRESS)}</code>` : ''}</footer>
 </body></html>`;
 }
 
@@ -270,7 +361,7 @@ ${last.map(r => renderPost(r, { mod })).join('')}
   const pager = Array.from({ length: pages }, (_, i) =>
     i === page ? `<b>[${i + 1}]</b>` : `<a href="/${board}/?p=${i}">[${i + 1}]</a>`).join(' ');
   return layout(`/${board}/ ${b.title}`, `<header class="boardhead"><h1>/${board}/ — ${esc(b.title)}</h1><p>${esc(b.desc)}</p></header>
-${postForm(board)}${html}<nav class="pager">${pager}</nav>`, req);
+${postForm(board, null, req)}${html}<nav class="pager">${pager}</nav>`, req);
 }
 
 function threadPage(req, board, id) {
@@ -279,7 +370,7 @@ function threadPage(req, board, id) {
   const mod = isMod(req);
   const replies = q.replies.all(id);
   const form = op.locked ? '<p class="locked">Šis pavediens ir slēgts.</p>'
-    : replies.length >= REPLY_LIMIT ? '<p class="locked">Pavediens ir pilns.</p>' : postForm(board, id);
+    : replies.length >= REPLY_LIMIT ? '<p class="locked">Pavediens ir pilns.</p>' : postForm(board, id, req);
   return layout(op.subject || `/${board}/ Nr. ${id}`, `<p class="back"><a href="/${board}/">← atpakaļ uz /${board}/</a></p>
 <div class="thread full">${renderPost(op, { op: true, mod })}${replies.map(r => renderPost(r, { mod })).join('')}</div>${form}`, req);
 }
@@ -305,12 +396,16 @@ function privacyPage(req) {
 nomainīta ik ${TAG_ROTATE_DAYS} dienas un katrā restartā; pēc tam vecie kodi tiek izdzēsti un vairs nevienam nav sasaistāmi ar tevi.</li>
 <li>Nav sīkdatņu, analītikas, reklāmu, ārēju fontu vai skriptu. Lapa nesatur JavaScript.</li>
 <li>Dzēstās ziņas pilnībā izzūd no diska pēc 3 dienām.</li></ul>
+${ONION_PORT ? `<h2>🧅 Tor</h2><ul>
+<li>Caur Tor serveris tavu IP adresi <b>vispār neredz</b> — pat ne uz mirkli. Tāpat nav redzams, kur atrodas serveris.</li>
+<li>Tāpēc Tor lietotājiem katrai ziņai jāieraksta drošības kods, un visiem Tor lietotājiem kopā ir ierobežots ziņu skaits minūtē.</li>
+<li>Lejupielādē Tor Browser tikai no oficiālās vietnes torproject.org.</li></ul>` : ''}
 <h2>Godīgi par robežām</h2>
 <ul>
 <li>Tavs interneta pakalpojumu sniedzējs, skolas Wi-Fi vai mobilais operators redz, ka tu apmeklē šo vietni (bet ne to, ko raksti, jo savienojums ir šifrēts).</li>
 <li>Ja raksti no skolas datora vai tīkla, skola var redzēt apmeklētās vietnes.</li>
 <li>Tavs rakstīšanas stils un detaļas, ko pastāsti, var tevi atklāt. Neraksti lietas, ko zina tikai tu.</li>
-<li>Maksimālai anonimitātei izmanto Tor Browser.</li>
+<li>Maksimālai anonimitātei izmanto Tor Browser${ONION_ADDRESS ? ` un mūsu .onion adresi: <code>${esc(ONION_ADDRESS)}</code>` : ''}.</li>
 <li>Anonimitāte nenozīmē, ka var pārkāpt likumu. Nelikumīgs saturs tiek dzēsts.</li></ul></section>`, req);
 }
 
@@ -321,6 +416,7 @@ ${msg ? `<p class="ok">${esc(msg)}</p><p><a href="/ieteikumi">Uzrakstīt vēl vi
 <input type="hidden" name="token" value="${formToken()}">
 <textarea name="body" required maxlength="${MAX_BODY}" rows="6" placeholder="Tavs ieteikums…"></textarea>
 <div class="hp" aria-hidden="true"><label>Neaizpildi šo <input name="website" tabindex="-1" autocomplete="off"></label></div>
+${captchaField(req)}
 <button>Nosūtīt ieteikumu</button></form>`}</section>`, req);
 }
 
@@ -364,6 +460,9 @@ ${renderPost(post, { op: !post.thread, mod: true })}</div>`).join('') || '<p>Nav
 ${renderPost(p, { op: !p.thread, mod: true })}</div>`).join('');
   return layout('Mod', `<h1>Moderācija</h1>
 <form method="post" action="/mod/logout" class="inline"><button>Iziet</button></form>
+${ONION_PORT ? `<div class="box"><b>🧅 Tor:</b> ${torPaused ? '<span class="badge">rakstīšana APTURĒTA</span>' : 'rakstīšana atļauta'}
+<form method="post" action="/mod/torpause/0" class="inline"><button>${torPaused ? 'Atļaut rakstīt caur Tor' : 'Apturēt rakstīšanu caur Tor'}</button></form>
+<p class="hint">Tor lietotājus nevar bloķēt individuāli. Ja kāds caur Tor plūdina, apturi Tor rakstīšanu uz laiku — lasīt joprojām varēs.</p></div>` : ''}
 <p><a class="btn" href="/mod/ieteikumi">Ieteikumi (${q.suggestionCount.get().n})</a></p>
 <h2>Ziņojumi (${grouped.size})</h2>${rep}<h2>Jaunākās ziņas</h2>${recent}`, req);
 }
@@ -417,16 +516,25 @@ function clean(s, max) {
 function handlePost(req, res, board, f) {
   if (f.website) return redirect(res, `/${board}/`); // honeypot: silently drop bots
   if (!checkFormToken(f.token)) return errorPage(req, res, 400, 'Forma ir novecojusi vai iesniegta pārāk ātri. Pārlādē lapu un mēģini vēlreiz.');
+  if (req.isTor && torPaused) return errorPage(req, res, 503, 'Rakstīšana caur Tor šobrīd ir īslaicīgi apturēta.');
   const tag = posterTag(req);
   const ban = q.getBan.get(tag, Date.now());
   if (ban) return errorPage(req, res, 403, `Tu esi bloķēts līdz ${fmtTime(ban.expires)}. Iemesls: ${ban.reason || 'noteikumu pārkāpums'}.`);
   const body = clean(f.body, MAX_BODY);
   if (body.length < 2) return errorPage(req, res, 400, 'Ziņa ir par īsu.');
   const thread = f.thread ? Number(f.thread) : null;
+  if (needsCaptcha(req) && !checkCaptcha(f.captcha_id, f.captcha)) {
+    const subject = clean(f.subject, MAX_SUBJECT);
+    return send(res, 400, layout('Nepareizs kods', `<section class="box"><h1>Nepareizs drošības kods</h1>
+<p>Mēģini vēlreiz ar jauno kodu — tavs teksts ir saglabāts.</p></section>${postForm(board, thread, req, { subject, body })}`, req));
+  }
   const cooldown = thread ? REPLY_COOLDOWN : THREAD_COOLDOWN;
   const key = tag + (thread ? ':r' : ':t');
   const last = rateLimit.get(key) || 0;
-  if (Date.now() - last < cooldown) return errorPage(req, res, 429, `Pagaidi ${Math.ceil((cooldown - (Date.now() - last)) / 1000)} sekundes pirms nākamās ziņas.`);
+  if (req.isTor) {
+    const wait = thread ? torAllow('r', TOR_REPLIES_PER_MIN, 60_000) : torAllow('t', TOR_THREADS_PER_10MIN, 600_000);
+    if (wait) return errorPage(req, res, 429, `Caur Tor šobrīd raksta pārāk daudz cilvēku. Pagaidi ${wait} sekundes.`);
+  } else if (Date.now() - last < cooldown) return errorPage(req, res, 429, `Pagaidi ${Math.ceil((cooldown - (Date.now() - last)) / 1000)} sekundes pirms nākamās ziņas.`);
 
   const now = Date.now();
   if (thread) {
@@ -467,6 +575,7 @@ async function handleMod(req, res, action, id) {
     if (m) modSessions.delete(m[1]);
     return redirect(res, '/', { 'Set-Cookie': 'mod=; Path=/; Max-Age=0' });
   }
+  if (action === 'torpause') { torPaused = !torPaused; return redirect(res, '/mod'); }
   if (action === 'delsug') { q.delSuggestion.run(id); return redirect(res, '/mod/ieteikumi'); }
   const p = q.get.get(id);
   if (!p) return errorPage(req, res, 404, 'Ziņa nav atrasta.');
@@ -475,6 +584,7 @@ async function handleMod(req, res, action, id) {
     case 'delete': q.del.run(p.id, p.thread ? -1 : p.id); q.clearReports.run(p.id); break;
     case 'dismiss': q.clearReports.run(p.id); break;
     case 'ban1': case 'ban7': {
+      if (isTorTag(p.tag)) return errorPage(req, res, 400, 'Šī ziņa nāk no Tor — Tor lietotājus nevar bloķēt. Dzēs ziņu vai aptur Tor rakstīšanu.');
       if (!p.tag) return errorPage(req, res, 410, 'Šī ziņa ir pārāk veca — autora kods jau ir dzēsts.');
       const days = action === 'ban1' ? 1 : 7;
       q.ban.run(p.tag, 'noteikumu pārkāpums (Nr. ' + p.id + ')', Date.now() + days * 86400_000);
@@ -489,15 +599,22 @@ async function handleMod(req, res, action, id) {
 }
 
 // ---------- router ----------
-const server = http.createServer(async (req, res) => {
+async function handle(req, res) {
   try {
     const url = new URL(req.url, 'http://x');
     const parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
+    // Tell Tor Browser users on the normal site that an .onion version exists.
+    if (!req.isTor && ONION_ADDRESS) res.setHeader('Onion-Location', `http://${ONION_ADDRESS}${url.pathname}${url.search}`);
 
     if (req.method === 'GET' || req.method === 'HEAD') {
       if (STATIC[url.pathname]) {
         const [type, buf] = STATIC[url.pathname];
         return send(res, 200, buf, type, { 'Cache-Control': 'public, max-age=3600' });
+      }
+      const cm = /^\/captcha\/([a-f0-9]{24})\.svg$/.exec(url.pathname);
+      if (cm) {
+        const c = captchas.get(cm[1]);
+        return c ? send(res, 200, captchaSvg(c.answer), 'image/svg+xml') : send(res, 404, '', 'text/plain');
       }
       if (parts.length === 0) return send(res, 200, homePage(req));
       if (parts[0] === 'noteikumi') return send(res, 200, rulesPage(req));
@@ -534,6 +651,7 @@ const server = http.createServer(async (req, res) => {
         if (!checkFormToken(f.token)) return errorPage(req, res, 400, 'Forma ir novecojusi vai iesniegta pārāk ātri. Pārlādē lapu.');
         const body = clean(f.body, MAX_BODY);
         if (body.length < 3) return errorPage(req, res, 400, 'Ieteikums ir par īsu.');
+        if (needsCaptcha(req) && !checkCaptcha(f.captcha_id, f.captcha)) return errorPage(req, res, 400, 'Nepareizs drošības kods. Atgriezies un mēģini vēlreiz.');
         const sk = posterTag(req) + ':sug';
         if (Date.now() - (rateLimit.get(sk) || 0) < 60_000) return errorPage(req, res, 429, 'Pagaidi minūti pirms nākamā ieteikuma.');
         rateLimit.set(sk, Date.now());
@@ -558,9 +676,18 @@ const server = http.createServer(async (req, res) => {
     console.error('error:', err.message);
     if (!res.headersSent) send(res, 500, 'Servera kļūda', 'text/plain');
   }
-});
+}
 
+const server = http.createServer((req, res) => { req.isTor = false; handle(req, res); });
 server.listen(PORT, HOST, () => {
   console.log(`${SITE_NAME} running on http://${HOST}:${PORT}`);
   if (!MOD_PASSWORD) console.log('WARNING: MOD_PASSWORD not set — you cannot moderate. Set it before going public.');
 });
+
+// The onion listener only ever binds to localhost — Tor connects to it from the same machine.
+if (ONION_PORT) {
+  const onion = http.createServer((req, res) => { req.isTor = true; handle(req, res); });
+  onion.listen(ONION_PORT, '127.0.0.1', () => {
+    console.log(`Tor (onion) listener on http://127.0.0.1:${ONION_PORT}${ONION_ADDRESS ? ' → http://' + ONION_ADDRESS : ''}`);
+  });
+}

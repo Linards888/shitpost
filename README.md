@@ -30,6 +30,75 @@ Then open http://127.0.0.1:3000.
 | `SECURE_COOKIES` | off            | `1` when served over HTTPS (adds HSTS + Secure cookie) |
 | `DATA_DIR`       | `./data`       | Where the SQLite file lives |
 
+## 🧅 Tor onion service (maximum anonymity)
+
+With Tor, visitors use Tor Browser and an `.onion` address. **The server never sees their IP address**, not even
+for a moment, and visitors can't see where the server is located either.
+
+How Shitpost handles Tor visitors:
+
+- Tor traffic arrives on a **separate local port** (`ONION_PORT`), so the app knows a visitor came through Tor.
+- All Tor visitors look identical, so **they can't be banned individually**. To keep spam under control:
+  - every post needs a **CAPTCHA**, which is self-made with no outside service and no JavaScript;
+  - **posting limits are shared** by all Tor users together (default: 12 replies per minute and 5 new threads per 10 minutes);
+  - moderators get a **"pause Tor posting"** switch in `/mod`, so the board stays readable but nobody can post through Tor.
+- Moderators can still **delete** any post. The ban buttons are hidden on Tor posts.
+- The normal site sends an `Onion-Location` header, so Tor Browser shows a ".onion available" button.
+
+### Setup on Fedora
+
+1. Install and enable Tor:
+
+```bash
+sudo dnf install tor
+```
+
+2. Add the lines from [`deploy/torrc-shitpost.conf`](deploy/torrc-shitpost.conf) to the end of `/etc/tor/torrc`:
+
+```bash
+sudo tee -a /etc/tor/torrc < deploy/torrc-shitpost.conf
+```
+
+3. Start Tor and make it start automatically on boot:
+
+```bash
+sudo systemctl enable --now tor
+```
+
+4. Read your new `.onion` address:
+
+```bash
+sudo cat /var/lib/tor/shitpost/hostname
+```
+
+5. Start Shitpost with the onion listener turned on. Replace the address with yours:
+
+```bash
+ONION_PORT=3080 ONION_ADDRESS=youraddress.onion MOD_PASSWORD=mypassword node server.js
+```
+
+6. Open the `.onion` address in Tor Browser.
+
+**Back up `/var/lib/tor/shitpost/`.** It contains the private key for your `.onion` address. If you lose it, you lose
+the address for good. If someone else gets it, they can pretend to be your site.
+
+If it doesn't work, check the Tor log:
+
+```bash
+sudo journalctl -u tor -n 50
+```
+
+| Env var                 | Default | Meaning |
+|-------------------------|---------|---------|
+| `ONION_PORT`            | *(off)* | Local port for Tor traffic (always binds to 127.0.0.1) |
+| `ONION_ADDRESS`         | *(none)*| Your `.onion` address, shown in the footer and the Onion-Location header |
+| `TOR_REPLIES_PER_MIN`   | `12`    | Replies per minute for **all** Tor users combined |
+| `TOR_THREADS_PER_10MIN` | `5`     | New threads per 10 minutes for **all** Tor users combined |
+| `CAPTCHA_ALL`           | off     | `1` = require the CAPTCHA on the normal site too |
+
+**Onion-only mode** (the most anonymous option, where the server is invisible too): run only Tor, don't open any
+public port, and keep `HOST=127.0.0.1` (the default). Then the site can only be reached through `.onion`.
+
 ## Deploying anonymously-friendly
 
 1. Put it behind HTTPS (Caddy is the easiest option). **Turn off access logs** in the reverse proxy, for example by
