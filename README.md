@@ -1,4 +1,4 @@
-# Starpbrīdis
+# Shitpost
 
 Anonīms teksta forums Latvijas skolēniem. / An anonymous text board for students in Latvia.
 

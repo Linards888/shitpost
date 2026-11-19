@@ -1,5 +1,5 @@
 'use strict';
-// Starpbrīdis — anonymous text board for Latvian students.
+// Shitpost — anonymous text board for Latvian students.
 // Zero dependencies: Node >= 22.13 (built-in node:sqlite).
 //
 // Privacy design:
@@ -24,7 +24,7 @@ const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const MOD_PASSWORD = process.env.MOD_PASSWORD || '';
 const TRUST_PROXY = process.env.TRUST_PROXY === '1'; // set when behind nginx/caddy
 const SECURE_COOKIES = process.env.SECURE_COOKIES === '1';
-const SITE_NAME = 'Starpbrīdis';
+const SITE_NAME = 'Shitpost';
 const TAG_ROTATE_DAYS = 7;
 const THREADS_PER_PAGE = 10;
 const MAX_PAGES = 10;
