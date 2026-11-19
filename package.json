@@ -1,0 +1,9 @@
+{
+  "name": "starpbridis",
+  "version": "1.0.0",
+  "description": "Anonymous text board for Latvian students",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=22.13" },
+  "license": "MIT"
+}
