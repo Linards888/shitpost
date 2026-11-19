@@ -1,0 +1,31 @@
+[Unit]
+Description=Shitpost anonymous board
+After=network-online.target tor.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=shitpost
+Group=shitpost
+WorkingDirectory=/opt/shitpost
+EnvironmentFile=/etc/shitpost.env
+ExecStart=/usr/bin/node /opt/shitpost/server.js
+Restart=on-failure
+RestartSec=3
+
+# Sandbox: the app can only write to its own data folder.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/shitpost/data
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

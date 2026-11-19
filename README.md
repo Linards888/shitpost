@@ -30,6 +30,27 @@ Then open http://127.0.0.1:3000.
 | `SECURE_COOKIES` | off            | `1` when served over HTTPS (adds HSTS + Secure cookie) |
 | `DATA_DIR`       | `./data`       | Where the SQLite file lives |
 
+## 🍓 Raspberry Pi (recommended: Tor-only)
+
+The installer sets Shitpost up as an `.onion`-only site. That means **no router port forwarding, no domain and no
+HTTPS certificate**, and your home IP address stays hidden. It starts automatically when the Pi boots.
+
+You need a Raspberry Pi 3, 4, 5 or Zero 2 W running **Raspberry Pi OS Lite (64-bit)**.
+
+```bash
+sudo apt update && sudo apt install -y git
+git clone -b dev/bold-curie-3q9mbl https://github.com/linards888/shitpost.git
+cd shitpost
+sudo ./deploy/install-rpi.sh
+```
+
+At the end it prints your `.onion` address and a generated moderator password.
+
+- **Update:** `git pull`, then `sudo ./deploy/install-rpi.sh` again. Posts, settings and the address are kept.
+- **Settings:** `sudo nano /etc/shitpost.env`, then `sudo systemctl restart shitpost`
+- **Status / errors:** `systemctl status shitpost`, or `journalctl -u shitpost -n 50` (no visitor data is ever logged)
+- **Back up** `/var/lib/tor/shitpost/` (address key) and `/opt/shitpost/data/` (posts).
+
 ## 🧅 Tor onion service (maximum anonymity)
 
 With Tor, visitors use Tor Browser and an `.onion` address. **The server never sees their IP address**, not even
