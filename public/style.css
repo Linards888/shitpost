@@ -1,17 +1,17 @@
 :root {
-  --bg: #f6f1ea; --panel: #fffdf9; --ink: #2b2420; --muted: #7b6f66; --line: #e3d8cc;
-  --accent: #9e3039; --accent-soft: #f3e1e2; --quote: #4f7a3a; --link: #9e3039;
+  --bg: #f7f2ec; --panel: #fffdf9; --ink: #2b2420; --muted: #7b6f66; --line: #e3d8cc;
+  --accent: #b34a0c; --accent-soft: #fbe6d6; --quote: #3f7a3a; --link: #a8440a; --btn: #b34a0c;
 }
 @media (prefers-color-scheme: dark) {
   :root { --bg: #17181b; --panel: #202226; --ink: #e8e4df; --muted: #9a958f; --line: #33363b;
-          --accent: #e0707a; --accent-soft: #3a2427; --quote: #9cc77f; --link: #e0707a; }
+          --accent: #f08a3c; --accent-soft: #3d2615; --quote: #9cc77f; --link: #f39a55; --btn: #b8500f; }
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--ink);
   font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
 a { color: var(--link); text-decoration: none; } a:hover { text-decoration: underline; }
 nav.top { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding: 10px 16px;
-  background: var(--accent); color: #fff; }
+  background: #a3420b; color: #fff; }
 nav.top a { color: #fff; } nav.top .logo { font-weight: 800; letter-spacing: .3px; font-size: 17px; }
 nav.top .boards a { margin-right: 6px; opacity: .9; } nav.top .right { margin-left: auto; font-size: 13px; }
 main { max-width: 900px; margin: 0 auto; padding: 16px; }
@@ -31,7 +31,7 @@ h1 { font-size: 22px; margin: 8px 0; } h2 { font-size: 17px; margin: 22px 0 8px;
   border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
 .postform textarea { resize: vertical; }
 .postform label { display: block; }
-button { font: inherit; background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 7px 14px; cursor: pointer; justify-self: start; }
+button { font: inherit; background: var(--btn); color: #fff; border: 0; border-radius: 6px; padding: 7px 14px; cursor: pointer; justify-self: start; }
 button:hover { filter: brightness(1.1); }
 .hint { font-size: 12px; color: var(--muted); }
 .hp { position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; }
@@ -56,3 +56,4 @@ form.inline { display: inline; } form.inline button { padding: 1px 7px; font-siz
 .modrow { border-bottom: 1px dashed var(--line); padding: 8px 0; } .reasons { color: var(--accent); font-weight: 600; margin: 0; }
 .ok { color: var(--quote); font-weight: 600; }
 @media (max-width: 560px) { .post.reply { margin-left: 10px; } .omitted, .open { margin-left: 10px; } nav.top .right { margin-left: 0; } }
+a.btn { display: inline-block; background: var(--btn); color: #fff; border-radius: 6px; padding: 6px 12px; }

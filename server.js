@@ -76,6 +76,11 @@ db.exec(`
     reason TEXT,
     expires INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS suggestions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    body TEXT NOT NULL,
+    created INTEGER NOT NULL
+  );
 `);
 
 const q = {
@@ -100,6 +105,10 @@ const q = {
   wipeTags: db.prepare('UPDATE posts SET tag = NULL WHERE tag IS NOT NULL AND tag NOT LIKE ?'),
   purgeBans: db.prepare('DELETE FROM bans WHERE expires <= ? OR tag NOT LIKE ?'),
   purgeDeleted: db.prepare('DELETE FROM posts WHERE deleted = 1 AND created < ?'),
+  suggest: db.prepare('INSERT INTO suggestions (body, created) VALUES (?,?)'),
+  suggestions: db.prepare('SELECT * FROM suggestions ORDER BY id DESC LIMIT 300'),
+  suggestionCount: db.prepare('SELECT COUNT(*) AS n FROM suggestions'),
+  delSuggestion: db.prepare('DELETE FROM suggestions WHERE id = ?'),
 };
 
 // ---------- anonymous poster tags (RAM-only secret) ----------
@@ -223,7 +232,7 @@ function layout(title, content, req) {
 <link rel="stylesheet" href="/style.css">
 </head><body>
 <nav class="top"><a class="logo" href="/">${SITE_NAME}</a> <span class="boards">${nav}</span>
-<span class="right"><a href="/noteikumi">noteikumi</a> · <a href="/privatums">privātums</a>${mod ? ' · <a href="/mod">MOD</a>' : ''}</span></nav>
+<span class="right"><a href="/ieteikumi">ieteikumi</a> · <a href="/noteikumi">noteikumi</a> · <a href="/privatums">privātums</a>${mod ? ' · <a href="/mod">MOD</a>' : ''}</span></nav>
 <main>${content}</main>
 <footer>${SITE_NAME} · Mēs neglabājam IP adreses, nelietojam sīkdatnes un izsekotājus. · <a href="/privatums">Kā tas strādā</a></footer>
 </body></html>`;
@@ -305,6 +314,23 @@ nomainīta ik ${TAG_ROTATE_DAYS} dienas un katrā restartā; pēc tam vecie kodi
 <li>Anonimitāte nenozīmē, ka var pārkāpt likumu. Nelikumīgs saturs tiek dzēsts.</li></ul></section>`, req);
 }
 
+function suggestionsPage(req, msg) {
+  return layout('Ieteikumi', `<section class="box"><h1>Ieteikumi</h1>
+<p>Kā uzlabot ${SITE_NAME}? Jauna sadaļa, kļūda, ideja, sūdzība? Raksti šeit. Ieteikumus redz tikai moderatori, un tie ir pilnīgi anonīmi.</p>
+${msg ? `<p class="ok">${esc(msg)}</p><p><a href="/ieteikumi">Uzrakstīt vēl vienu</a> · <a href="/">sākums</a></p>` : `<form method="post" action="/ieteikumi" class="postform">
+<input type="hidden" name="token" value="${formToken()}">
+<textarea name="body" required maxlength="${MAX_BODY}" rows="6" placeholder="Tavs ieteikums…"></textarea>
+<div class="hp" aria-hidden="true"><label>Neaizpildi šo <input name="website" tabindex="-1" autocomplete="off"></label></div>
+<button>Nosūtīt ieteikumu</button></form>`}</section>`, req);
+}
+
+function modSuggestionsPage(req) {
+  const list = q.suggestions.all().map(s => `<div class="post"><header><time>${fmtTime(s.created)}</time>
+<form method="post" action="/mod/delsug/${s.id}" class="inline"><button>dzēst</button></form></header>
+<div class="body">${esc(s.body).replace(/\n/g, '<br>')}</div></div>`).join('') || '<p>Vēl nav neviena ieteikuma.</p>';
+  return layout('Ieteikumi (mod)', `<p class="back"><a href="/mod">← moderācija</a></p><h1>Ieteikumi</h1>${list}`, req);
+}
+
 function reportPage(req, id, msg) {
   const p = q.get.get(id);
   if (!p || p.deleted) return null;
@@ -338,6 +364,7 @@ ${renderPost(post, { op: !post.thread, mod: true })}</div>`).join('') || '<p>Nav
 ${renderPost(p, { op: !p.thread, mod: true })}</div>`).join('');
   return layout('Mod', `<h1>Moderācija</h1>
 <form method="post" action="/mod/logout" class="inline"><button>Iziet</button></form>
+<p><a class="btn" href="/mod/ieteikumi">Ieteikumi (${q.suggestionCount.get().n})</a></p>
 <h2>Ziņojumi (${grouped.size})</h2>${rep}<h2>Jaunākās ziņas</h2>${recent}`, req);
 }
 
@@ -440,6 +467,7 @@ async function handleMod(req, res, action, id) {
     if (m) modSessions.delete(m[1]);
     return redirect(res, '/', { 'Set-Cookie': 'mod=; Path=/; Max-Age=0' });
   }
+  if (action === 'delsug') { q.delSuggestion.run(id); return redirect(res, '/mod/ieteikumi'); }
   const p = q.get.get(id);
   if (!p) return errorPage(req, res, 404, 'Ziņa nav atrasta.');
   const back = req.headers.referer && sameOrigin({ headers: { origin: req.headers.referer, host: req.headers.host } }) ? req.headers.referer : '/mod';
@@ -474,6 +502,10 @@ const server = http.createServer(async (req, res) => {
       if (parts.length === 0) return send(res, 200, homePage(req));
       if (parts[0] === 'noteikumi') return send(res, 200, rulesPage(req));
       if (parts[0] === 'privatums') return send(res, 200, privacyPage(req));
+      if (parts[0] === 'ieteikumi') return send(res, 200, suggestionsPage(req));
+      if (parts[0] === 'mod' && parts[1] === 'ieteikumi') {
+        return isMod(req) ? send(res, 200, modSuggestionsPage(req)) : redirect(res, '/mod');
+      }
       if (parts[0] === 'mod') return send(res, 200, modPage(req));
       if (parts[0] === 'report' && /^\d+$/.test(parts[1] || '')) {
         const html = reportPage(req, Number(parts[1]));
@@ -497,6 +529,17 @@ const server = http.createServer(async (req, res) => {
       if (!sameOrigin(req)) return errorPage(req, res, 403, 'Nederīgs pieprasījums.');
       if (parts[0] === 'mod') return await handleMod(req, res, parts[1], Number(parts[2]));
       const f = await readForm(req);
+      if (parts[0] === 'ieteikumi') {
+        if (f.website) return redirect(res, '/');
+        if (!checkFormToken(f.token)) return errorPage(req, res, 400, 'Forma ir novecojusi vai iesniegta pārāk ātri. Pārlādē lapu.');
+        const body = clean(f.body, MAX_BODY);
+        if (body.length < 3) return errorPage(req, res, 400, 'Ieteikums ir par īsu.');
+        const sk = posterTag(req) + ':sug';
+        if (Date.now() - (rateLimit.get(sk) || 0) < 60_000) return errorPage(req, res, 429, 'Pagaidi minūti pirms nākamā ieteikuma.');
+        rateLimit.set(sk, Date.now());
+        q.suggest.run(body, Date.now());
+        return send(res, 200, suggestionsPage(req, 'Paldies! Tavu ieteikumu redzēs moderatori.'));
+      }
       if (parts[0] === 'report' && /^\d+$/.test(parts[1] || '')) {
         const id = Number(parts[1]);
         if (!checkFormToken(f.token)) return errorPage(req, res, 400, 'Forma ir novecojusi. Pārlādē lapu.');
